@@ -7,6 +7,7 @@ import { env } from './config/env';
 import { prisma } from './config/database';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { apiLimiter } from './middleware/rateLimit';
+import { setupSwagger } from './config/swagger';
 
 // Route creators
 import { createAuthRoutes } from './modules/auth/routes';
@@ -46,6 +47,9 @@ app.use('/api', apiLimiter);
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Swagger API docs
+setupSwagger(app);
 
 // API Routes
 app.use('/api/auth', createAuthRoutes(prisma));

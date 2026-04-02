@@ -1,988 +1,451 @@
-import { PrismaClient, UserRole, BookingStatus, SessionFormat, PaymentStatus } from '@prisma/client';
+import 'dotenv/config';
+import { PrismaClient } from '../src/generated/prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import bcrypt from 'bcryptjs';
 
-const prisma = new PrismaClient();
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
+const prisma = new PrismaClient({ adapter });
 
 async function main() {
-  console.log('开始种子数据插入...');
+  console.log('Seeding database...');
 
-  // 清理现有数据
-  await cleanDatabase();
+  // Clean in reverse dependency order
+  const models = [
+    'auditLog', 'notification', 'homework', 'note', 'favoriteTutor',
+    'quizAttempt', 'quizQuestion', 'question', 'quiz',
+    'review', 'payment', 'booking', 'timeSlot', 'tutorSubject',
+    'subject', 'studentProfile', 'tutorProfile', 'oAuthConnection', 'user',
+  ] as const;
 
-  // 1. 创建科目
-  const subjects = await createSubjects();
-  console.log('科目创建完成:', subjects.length);
+  for (const model of models) {
+    await (prisma[model] as any).deleteMany();
+  }
 
-  // 2. 创建管理员用户
-  const admin = await createAdmin();
-  console.log('管理员创建完成:', admin.email);
+  const passwordHash = await bcrypt.hash('Password123!', 12);
 
-  // 3. 创建导师用户及其档案
-  const tutors = await createTutors();
-  console.log('导师创建完成:', tutors.length);
-
-  // 4. 创建学生用户及其档案
-  const students = await createStudents();
-  console.log('学生创建完成:', students.length);
-
-  // 5. 关联导师科目
-  await createTutorSubjects(tutors, subjects);
-  console.log('导师科目关联完成');
-
-  // 6. 创建导师可用时间段
-  await createTimeSlots(tutors);
-  console.log('导师时间段创建完成');
-
-  // 7. 创建预订
-  const bookings = await createBookings(tutors, students, subjects);
-  console.log('预订创建完成:', bookings.length);
-
-  // 8. 创建支付记录
-  await createPayments(bookings);
-  console.log('支付记录创建完成');
-
-  // 9. 创建评价
-  await createReviews(bookings);
-  console.log('评价创建完成');
-
-  // 10. 创建问题库
-  const questions = await createQuestions(subjects);
-  console.log('问题创建完成:', questions.length);
-
-  // 11. 创建测验
-  const quizzes = await createQuizzes(subjects, questions);
-  console.log('测验创建完成:', quizzes.length);
-
-  // 12. 创建收藏导师
-  await createFavoriteTutors(students, tutors);
-  console.log('收藏导师创建完成');
-
-  // 13. 创建学习笔记
-  await createNotes(students, bookings);
-  console.log('学习笔记创建完成');
-
-  // 14. 创建作业
-  await createHomework(tutors, bookings);
-  console.log('作业创建完成');
-
-  // 15. 创建通知
-  await createNotifications([...students, ...tutors]);
-  console.log('通知创建完成');
-
-  console.log('种子数据插入完成!');
-}
-
-async function cleanDatabase() {
-  // 按依赖顺序删除
-  await prisma.auditLog.deleteMany();
-  await prisma.notification.deleteMany();
-  await prisma.homework.deleteMany();
-  await prisma.note.deleteMany();
-  await prisma.favoriteTutor.deleteMany();
-  await prisma.quizAttempt.deleteMany();
-  await prisma.quizQuestion.deleteMany();
-  await prisma.quiz.deleteMany();
-  await prisma.question.deleteMany();
-  await prisma.review.deleteMany();
-  await prisma.payment.deleteMany();
-  await prisma.booking.deleteMany();
-  await prisma.timeSlot.deleteMany();
-  await prisma.tutorSubject.deleteMany();
-  await prisma.studentProfile.deleteMany();
-  await prisma.tutorProfile.deleteMany();
-  await prisma.oAuthConnection.deleteMany();
-  await prisma.user.deleteMany();
-  await prisma.subject.deleteMany();
-}
-
-async function createSubjects() {
-  const subjectData = [
-    // 数学
-    { name: '基础数学', category: '数学', level: 'primary', description: '小学数学基础，包括加减乘除、分数、小数等' },
-    { name: '代数', category: '数学', level: 'middle', description: '初中代数，包括方程、不等式、函数基础' },
-    { name: '几何', category: '数学', level: 'middle', description: '初中几何，包括平面几何证明和计算' },
-    { name: '高等数学', category: '数学', level: 'high', description: '高中数学，包括微积分预备、三角函数等' },
-    { name: '线性代数', category: '数学', level: 'college', description: '大学线性代数，矩阵、向量空间等' },
-    { name: '微积分', category: '数学', level: 'college', description: '大学微积分，极限、导数、积分等' },
-
-    // 物理
-    { name: '基础物理', category: '物理', level: 'middle', description: '初中物理，力学、热学基础' },
-    { name: '力学', category: '物理', level: 'high', description: '高中力学，牛顿定律、能量守恒等' },
-    { name: '电磁学', category: '物理', level: 'high', description: '高中电磁学，电场、磁场、电路' },
-    { name: '光学', category: '物理', level: 'high', description: '高中光学，光的反射、折射、干涉' },
-    { name: '量子物理', category: '物理', level: 'college', description: '大学量子物理入门' },
-
-    // 计算机科学
-    { name: 'Python编程', category: '计算机科学', level: 'primary', description: 'Python编程入门，适合初学者' },
-    { name: '数据结构与算法', category: '计算机科学', level: 'college', description: '经典数据结构和算法分析' },
-    { name: 'Web开发', category: '计算机科学', level: 'middle', description: '前端和后端Web开发基础' },
-    { name: '机器学习', category: '计算机科学', level: 'college', description: '机器学习基础理论和实践' },
-    { name: '数据库原理', category: '计算机科学', level: 'college', description: '关系型数据库设计和SQL' },
-  ];
-
-  return await prisma.subject.createManyAndReturn({
-    data: subjectData,
-  });
-}
-
-async function createAdmin() {
-  return await prisma.user.create({
+  // ============================================
+  // 1. Users (1 admin + 4 tutors + 3 students)
+  // ============================================
+  const admin = await prisma.user.create({
     data: {
       email: 'admin@stemtutor.com',
-      password: 'admin123', // 实际应用中应使用哈希密码
-      firstName: '系统',
-      lastName: '管理员',
-      role: UserRole.ADMINISTRATOR,
+      passwordHash,
+      role: 'ADMINISTRATOR',
+      firstName: 'Admin',
+      lastName: 'System',
       isActive: true,
       isVerified: true,
     },
   });
-}
-
-async function createTutors() {
-  const tutorData = [
-    {
-      email: 'zhang.teacher@stemtutor.com',
-      password: 'tutor123',
-      firstName: '张',
-      lastName: '老师',
-      role: UserRole.TUTOR,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=zhang',
-      tutorProfile: {
-        create: {
-          bio: '资深数学教师，15年教学经验，擅长培养学生的数学思维和解题技巧。',
-          education: {
-            degree: '数学硕士',
-            university: '北京大学',
-            year: 2010,
-          },
-          hourlyRate60: 150,
-          hourlyRate90: 200,
-          location: '北京市海淀区',
-          isVerified: true,
-          totalSessions: 120,
-          avgRating: 4.8,
-          totalReviews: 45,
-        },
-      },
-    },
-    {
-      email: 'li.physics@stemtutor.com',
-      password: 'tutor123',
-      firstName: '李',
-      lastName: '物理',
-      role: UserRole.TUTOR,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=li',
-      tutorProfile: {
-        create: {
-          bio: '物理博士，专注于高中物理竞赛辅导，帮助学生理解物理本质。',
-          education: {
-            degree: '物理学博士',
-            university: '清华大学',
-            year: 2015,
-          },
-          hourlyRate60: 180,
-          hourlyRate90: 250,
-          location: '北京市朝阳区',
-          isVerified: true,
-          totalSessions: 85,
-          avgRating: 4.9,
-          totalReviews: 32,
-        },
-      },
-    },
-    {
-      email: 'wang.cs@stemtutor.com',
-      password: 'tutor123',
-      firstName: '王',
-      lastName: '程序员',
-      role: UserRole.TUTOR,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=wang',
-      tutorProfile: {
-        create: {
-          bio: '资深软件工程师，5年大厂经验，精通Python、Java、Web开发。',
-          education: {
-            degree: '计算机科学硕士',
-            university: '浙江大学',
-            year: 2018,
-          },
-          hourlyRate60: 120,
-          hourlyRate90: 160,
-          location: '杭州市西湖区',
-          isVerified: true,
-          totalSessions: 60,
-          avgRating: 4.7,
-          totalReviews: 25,
-        },
-      },
-    },
-    {
-      email: 'chen.math@stemtutor.com',
-      password: 'tutor123',
-      firstName: '陈',
-      lastName: '数学',
-      role: UserRole.TUTOR,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=chen',
-      tutorProfile: {
-        create: {
-          bio: '小学数学启蒙专家，善于用游戏化方式激发孩子学习兴趣。',
-          education: {
-            degree: '教育学学士',
-            university: '华东师范大学',
-            year: 2012,
-          },
-          hourlyRate60: 80,
-          hourlyRate90: 110,
-          location: '上海市浦东新区',
-          isVerified: true,
-          totalSessions: 200,
-          avgRating: 4.6,
-          totalReviews: 68,
-        },
-      },
-    },
-    {
-      email: 'zhao.ml@stemtutor.com',
-      password: 'tutor123',
-      firstName: '赵',
-      lastName: 'AI',
-      role: UserRole.TUTOR,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=zhao',
-      tutorProfile: {
-        create: {
-          bio: 'AI研究员，曾在多家AI公司工作，熟悉机器学习、深度学习实践。',
-          education: {
-            degree: '人工智能博士',
-            university: '中科院',
-            year: 2020,
-          },
-          hourlyRate60: 200,
-          hourlyRate90: 280,
-          location: '北京市中关村',
-          isVerified: true,
-          totalSessions: 30,
-          avgRating: 5.0,
-          totalReviews: 12,
-        },
-      },
-    },
-  ];
 
   const tutors = [];
-  for (const data of tutorData) {
-    const tutor = await prisma.user.create({
-      data,
-      include: { tutorProfile: true },
-    });
-    tutors.push(tutor);
-  }
-  return tutors;
-}
-
-async function createStudents() {
-  const studentData = [
-    {
-      email: 'student1@example.com',
-      password: 'student123',
-      firstName: '小明',
-      lastName: '王',
-      role: UserRole.STUDENT,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=xiaoming',
-      studentProfile: {
-        create: {
-          gradeLevel: '高中二年级',
-          school: '北京四中',
-          parentEmail: 'parent1@example.com',
-          parentPhone: '13800138001',
-        },
-      },
-    },
-    {
-      email: 'student2@example.com',
-      password: 'student123',
-      firstName: '小红',
-      lastName: '李',
-      role: UserRole.STUDENT,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=xiaohong',
-      studentProfile: {
-        create: {
-          gradeLevel: '初中三年级',
-          school: '上海中学',
-          parentEmail: 'parent2@example.com',
-          parentPhone: '13800138002',
-        },
-      },
-    },
-    {
-      email: 'student3@example.com',
-      password: 'student123',
-      firstName: '小华',
-      lastName: '张',
-      role: UserRole.STUDENT,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=xiaohua',
-      studentProfile: {
-        create: {
-          gradeLevel: '小学五年级',
-          school: '杭州小学',
-          parentEmail: 'parent3@example.com',
-          parentPhone: '13800138003',
-        },
-      },
-    },
-    {
-      email: 'student4@example.com',
-      password: 'student123',
-      firstName: '小强',
-      lastName: '陈',
-      role: UserRole.STUDENT,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=xiaoqiang',
-      studentProfile: {
-        create: {
-          gradeLevel: '大学一年级',
-          school: '清华大学',
-        },
-      },
-    },
-    {
-      email: 'student5@example.com',
-      password: 'student123',
-      firstName: '小美',
-      lastName: '赵',
-      role: UserRole.STUDENT,
-      isActive: true,
-      isVerified: true,
-      avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=xiaomei',
-      studentProfile: {
-        create: {
-          gradeLevel: '大学三年级',
-          school: '北京大学',
-        },
-      },
-    },
+  const tutorSeedData = [
+    { email: 'zhang.teacher@stemtutor.com', firstName: '张', lastName: '老师' },
+    { email: 'li.physics@stemtutor.com', firstName: '李', lastName: '物理' },
+    { email: 'wang.cs@stemtutor.com', firstName: '王', lastName: '程序员' },
+    { email: 'chen.math@stemtutor.com', firstName: '陈', lastName: '数学' },
   ];
+
+  for (const t of tutorSeedData) {
+    tutors.push(await prisma.user.create({
+      data: { email: t.email, passwordHash, role: 'TUTOR', firstName: t.firstName, lastName: t.lastName, isActive: true, isVerified: true },
+    }));
+  }
 
   const students = [];
-  for (const data of studentData) {
-    const student = await prisma.user.create({
-      data,
-      include: { studentProfile: true },
-    });
-    students.push(student);
-  }
-  return students;
-}
-
-async function createTutorSubjects(tutors: any[], subjects: any[]) {
-  const tutorSubjectData: { tutorId: string; subjectId: string; pricePerHour: number }[] = [];
-
-  // 张老师 - 数学相关
-  const mathTutor = tutors.find(t => t.email === 'zhang.teacher@stemtutor.com');
-  const mathSubjects = subjects.filter(s => s.category === '数学');
-  mathSubjects.forEach(s => {
-    tutorSubjectData.push({
-      tutorId: mathTutor!.id,
-      subjectId: s.id,
-      pricePerHour: mathTutor!.tutorProfile!.hourlyRate60!,
-    });
-  });
-
-  // 李物理 - 物理相关
-  const physicsTutor = tutors.find(t => t.email === 'li.physics@stemtutor.com');
-  const physicsSubjects = subjects.filter(s => s.category === '物理');
-  physicsSubjects.forEach(s => {
-    tutorSubjectData.push({
-      tutorId: physicsTutor!.id,
-      subjectId: s.id,
-      pricePerHour: physicsTutor!.tutorProfile!.hourlyRate60!,
-    });
-  });
-
-  // 王程序员 - 计算机科学
-  const csTutor = tutors.find(t => t.email === 'wang.cs@stemtutor.com');
-  const csSubjects = subjects.filter(s => s.category === '计算机科学');
-  csSubjects.forEach(s => {
-    tutorSubjectData.push({
-      tutorId: csTutor!.id,
-      subjectId: s.id,
-      pricePerHour: csTutor!.tutorProfile!.hourlyRate60!,
-    });
-  });
-
-  // 陈数学 - 小学数学
-  const primaryMathTutor = tutors.find(t => t.email === 'chen.math@stemtutor.com');
-  const primaryMath = subjects.find(s => s.name === '基础数学');
-  if (primaryMath && primaryMathTutor) {
-    tutorSubjectData.push({
-      tutorId: primaryMathTutor.id,
-      subjectId: primaryMath.id,
-      pricePerHour: primaryMathTutor.tutorProfile!.hourlyRate60!,
-    });
-  }
-
-  // 赵AI - 机器学习
-  const aiTutor = tutors.find(t => t.email === 'zhao.ml@stemtutor.com');
-  const mlSubject = subjects.find(s => s.name === '机器学习');
-  const dsSubject = subjects.find(s => s.name === '数据结构与算法');
-  if (aiTutor) {
-    if (mlSubject) {
-      tutorSubjectData.push({
-        tutorId: aiTutor.id,
-        subjectId: mlSubject.id,
-        pricePerHour: aiTutor.tutorProfile!.hourlyRate60!,
-      });
-    }
-    if (dsSubject) {
-      tutorSubjectData.push({
-        tutorId: aiTutor.id,
-        subjectId: dsSubject.id,
-        pricePerHour: aiTutor.tutorProfile!.hourlyRate60!,
-      });
-    }
-  }
-
-  await prisma.tutorSubject.createMany({
-    data: tutorSubjectData,
-  });
-}
-
-async function createTimeSlots(tutors: any[]) {
-  const timeSlotData: {
-    tutorId: string;
-    date: Date;
-    startTime: string;
-    endTime: string;
-    isAvailable: boolean;
-    format: SessionFormat;
-  }[] = [];
-
-  const today = new Date();
-  const formats: SessionFormat[] = [SessionFormat.online, SessionFormat.in_person];
-
-  tutors.forEach(tutor => {
-    // 为每个导师创建未来7天的时间段
-    for (let dayOffset = 1; dayOffset <= 7; dayOffset++) {
-      const date = new Date(today);
-      date.setDate(date.getDate() + dayOffset);
-
-      // 每天创建多个时间段
-      const slots = [
-        { start: '09:00', end: '10:00' },
-        { start: '10:00', end: '11:00' },
-        { start: '14:00', end: '15:00' },
-        { start: '15:00', end: '16:00' },
-        { start: '19:00', end: '20:00' },
-      ];
-
-      slots.forEach((slot, index) => {
-        timeSlotData.push({
-          tutorId: tutor.id,
-          date,
-          startTime: slot.start,
-          endTime: slot.end,
-          isAvailable: index % 2 === 0, // 部分可用
-          format: formats[index % 2],
-        });
-      });
-    }
-  });
-
-  await prisma.timeSlot.createMany({
-    data: timeSlotData,
-  });
-}
-
-async function createBookings(tutors: any[], students: any[], subjects: any[]) {
-  const bookingData: {
-    studentId: string;
-    tutorId: string;
-    subjectId: string;
-    timeSlotId?: string;
-    bookingDate: Date;
-    startTime: string;
-    endTime: string;
-    format: SessionFormat;
-    status: BookingStatus;
-    price: number;
-    notes: string;
-    meetUrl?: string;
-  }[] = [];
-
-  const mathTutor = tutors.find(t => t.email === 'zhang.teacher@stemtutor.com');
-  const physicsTutor = tutors.find(t => t.email === 'li.physics@stemtutor.com');
-  const csTutor = tutors.find(t => t.email === 'wang.cs@stemtutor.com');
-
-  const student1 = students.find(s => s.email === 'student1@example.com');
-  const student2 = students.find(s => s.email === 'student2@example.com');
-  const student3 = students.find(s => s.email === 'student3@example.com');
-  const student4 = students.find(s => s.email === 'student4@example.com');
-
-  const calculusSubject = subjects.find(s => s.name === '微积分');
-  const mechanicsSubject = subjects.find(s => s.name === '力学');
-  const pythonSubject = subjects.find(s => s.name === 'Python编程');
-  const algebraSubject = subjects.find(s => s.name === '代数');
-
-  const statuses: BookingStatus[] = [
-    BookingStatus.completed,
-    BookingStatus.confirmed,
-    BookingStatus.pending,
-    BookingStatus.cancelled,
+  const studentSeedData = [
+    { email: 'student1@example.com', firstName: '小明', lastName: '王' },
+    { email: 'student2@example.com', firstName: '小红', lastName: '李' },
+    { email: 'student3@example.com', firstName: '小华', lastName: '张' },
   ];
 
-  // 创建不同状态的预订
-  if (mathTutor && student1 && calculusSubject) {
-    bookingData.push({
-      studentId: student1.id,
-      tutorId: mathTutor.id,
-      subjectId: calculusSubject.id,
-      bookingDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-      startTime: '14:00',
-      endTime: '15:00',
-      format: SessionFormat.online,
-      status: BookingStatus.completed,
-      price: 150,
-      notes: '微积分基础讲解',
-      meetUrl: 'https://meet.google.com/abc-defg-hij',
-    });
+  for (const s of studentSeedData) {
+    students.push(await prisma.user.create({
+      data: { email: s.email, passwordHash, role: 'STUDENT', firstName: s.firstName, lastName: s.lastName, isActive: true, isVerified: true },
+    }));
   }
 
-  if (physicsTutor && student2 && mechanicsSubject) {
-    bookingData.push({
-      studentId: student2.id,
-      tutorId: physicsTutor.id,
-      subjectId: mechanicsSubject.id,
-      bookingDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
-      startTime: '10:00',
-      endTime: '11:00',
-      format: SessionFormat.in_person,
-      status: BookingStatus.confirmed,
-      price: 180,
-      notes: '力学竞赛辅导',
-    });
-  }
+  console.log(`Users: ${1 + tutors.length + students.length}`);
 
-  if (csTutor && student4 && pythonSubject) {
-    bookingData.push({
-      studentId: student4.id,
-      tutorId: csTutor.id,
-      subjectId: pythonSubject.id,
-      bookingDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
-      startTime: '19:00',
-      endTime: '20:00',
-      format: SessionFormat.online,
-      status: BookingStatus.pending,
-      price: 120,
-      notes: 'Python入门第一课',
-    });
-  }
+  // ============================================
+  // 2. Student Profiles
+  // ============================================
+  await Promise.all([
+    prisma.studentProfile.create({ data: { userId: students[0].id, level: 'high_school', grade: '2nd year', institution: 'Beijing No.4 High School', learningPrefs: { preferredFormat: 'online' } } }),
+    prisma.studentProfile.create({ data: { userId: students[1].id, level: 'high_school', grade: '3rd year', institution: 'Shanghai Middle School', learningPrefs: { preferredFormat: 'in_person' } } }),
+    prisma.studentProfile.create({ data: { userId: students[2].id, level: 'university', grade: '1st year', institution: 'Tsinghua University', learningPrefs: { preferredFormat: 'online' } } }),
+  ]);
 
-  if (mathTutor && student3 && algebraSubject) {
-    bookingData.push({
-      studentId: student3.id,
-      tutorId: mathTutor.id,
-      subjectId: algebraSubject.id,
-      bookingDate: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
-      startTime: '09:00',
-      endTime: '10:00',
-      format: SessionFormat.online,
-      status: BookingStatus.cancelled,
-      price: 150,
-      notes: '学生临时取消',
-    });
-  }
+  // ============================================
+  // 3. Tutor Profiles
+  // ============================================
+  const tutorProfiles = await Promise.all([
+    prisma.tutorProfile.create({
+      data: {
+        userId: tutors[0].id,
+        bio: 'Experienced mathematics teacher with 15 years of experience.',
+        education: { degree: 'MSc Mathematics', university: 'Peking University', year: 2010 },
+        hourlyRate30: 40, hourlyRate45: 55, hourlyRate60: 70, hourlyRate90: 100, onlineRate: 60,
+        location: 'Beijing Haidian', latitude: 39.959, longitude: 116.298,
+        isVerified: true, avgRating: 4.8, totalReviews: 45, totalSessions: 120,
+      },
+    }),
+    prisma.tutorProfile.create({
+      data: {
+        userId: tutors[1].id,
+        bio: 'Physics PhD, specializing in physics competition coaching.',
+        education: { degree: 'PhD Physics', university: 'Tsinghua University', year: 2015 },
+        hourlyRate30: 50, hourlyRate45: 65, hourlyRate60: 80, hourlyRate90: 110, onlineRate: 70,
+        location: 'Beijing Chaoyang', latitude: 39.921, longitude: 116.443,
+        isVerified: true, avgRating: 4.9, totalReviews: 32, totalSessions: 85,
+      },
+    }),
+    prisma.tutorProfile.create({
+      data: {
+        userId: tutors[2].id,
+        bio: 'Senior software engineer, proficient in Python, Java, and Web development.',
+        education: { degree: 'MSc Computer Science', university: 'Zhejiang University', year: 2018 },
+        hourlyRate30: 35, hourlyRate45: 50, hourlyRate60: 60, hourlyRate90: 85, onlineRate: 50,
+        location: 'Hangzhou Xihu', latitude: 30.259, longitude: 120.139,
+        isVerified: true, avgRating: 4.7, totalReviews: 25, totalSessions: 60,
+      },
+    }),
+    prisma.tutorProfile.create({
+      data: {
+        userId: tutors[3].id,
+        bio: 'Elementary math specialist, gamified learning approach.',
+        education: { degree: 'BEd Education', university: 'East China Normal University', year: 2012 },
+        hourlyRate30: 25, hourlyRate45: 35, hourlyRate60: 45, hourlyRate90: 60, onlineRate: 35,
+        location: 'Shanghai Pudong', latitude: 31.230, longitude: 121.474,
+        isVerified: true, avgRating: 4.6, totalReviews: 68, totalSessions: 200,
+      },
+    }),
+  ]);
 
-  return await prisma.booking.createManyAndReturn({
-    data: bookingData,
-  });
-}
+  // ============================================
+  // 4. Subjects (15 total)
+  // ============================================
+  const subjects = await Promise.all([
+    // Mathematics
+    prisma.subject.create({ data: { name: 'Basic Math', category: 'mathematics', level: 'elementary', description: 'Elementary math: addition, subtraction, multiplication, division, fractions.' } }),
+    prisma.subject.create({ data: { name: 'Algebra', category: 'mathematics', level: 'high_school', description: 'Equations, inequalities, functions.' } }),
+    prisma.subject.create({ data: { name: 'Geometry', category: 'mathematics', level: 'high_school', description: 'Plane geometry, trigonometry.' } }),
+    prisma.subject.create({ data: { name: 'Calculus', category: 'mathematics', level: 'university', description: 'Limits, derivatives, integrals.' } }),
+    prisma.subject.create({ data: { name: 'Linear Algebra', category: 'mathematics', level: 'university', description: 'Matrices, vectors, eigenvalues.' } }),
+    prisma.subject.create({ data: { name: 'Statistics', category: 'mathematics', level: 'university', description: 'Probability, distributions, hypothesis testing.' } }),
+    // Physics
+    prisma.subject.create({ data: { name: 'Basic Physics', category: 'physics', level: 'high_school', description: 'Mechanics and thermodynamics basics.' } }),
+    prisma.subject.create({ data: { name: 'Mechanics', category: 'physics', level: 'high_school', description: "Newton's laws, energy conservation." } }),
+    prisma.subject.create({ data: { name: 'Electromagnetism', category: 'physics', level: 'university', description: 'Electric fields, magnetic fields, Maxwell equations.' } }),
+    prisma.subject.create({ data: { name: 'Quantum Physics', category: 'physics', level: 'university', description: 'Wave-particle duality, Schrodinger equation.' } }),
+    // Computer Science
+    prisma.subject.create({ data: { name: 'Python Programming', category: 'computer_science', level: 'high_school', description: 'Python programming for beginners.' } }),
+    prisma.subject.create({ data: { name: 'Data Structures & Algorithms', category: 'computer_science', level: 'university', description: 'Classic data structures and algorithm analysis.' } }),
+    prisma.subject.create({ data: { name: 'Web Development', category: 'computer_science', level: 'high_school', description: 'Frontend and backend web development basics.' } }),
+    prisma.subject.create({ data: { name: 'Machine Learning', category: 'computer_science', level: 'university', description: 'ML theory and practice.' } }),
+    prisma.subject.create({ data: { name: 'Database Systems', category: 'computer_science', level: 'university', description: 'Relational databases, SQL, normalization.' } }),
+  ]);
 
-async function createPayments(bookings: any[]) {
-  const paymentData: {
-    bookingId: string;
-    amount: number;
-    currency: string;
-    status: PaymentStatus;
-    stripePaymentIntentId?: string;
-    paidAt?: Date;
-  }[] = [];
+  console.log(`Subjects: ${subjects.length}`);
 
-  bookings.forEach(booking => {
-    if (booking.status === BookingStatus.completed) {
-      paymentData.push({
-        bookingId: booking.id,
-        amount: booking.price,
-        currency: 'CNY',
-        status: PaymentStatus.completed,
-        stripePaymentIntentId: `pi_test_${booking.id.slice(0, 8)}`,
-        paidAt: booking.bookingDate,
-      });
-    } else if (booking.status === BookingStatus.confirmed) {
-      paymentData.push({
-        bookingId: booking.id,
-        amount: booking.price,
-        currency: 'CNY',
-        status: PaymentStatus.completed,
-        stripePaymentIntentId: `pi_test_${booking.id.slice(0, 8)}`,
-        paidAt: new Date(),
-      });
-    } else if (booking.status === BookingStatus.pending) {
-      paymentData.push({
-        bookingId: booking.id,
-        amount: booking.price,
-        currency: 'CNY',
-        status: PaymentStatus.pending,
-      });
-    }
-  });
+  // ============================================
+  // 5. Tutor Subjects
+  // ============================================
+  const mathSubjects = subjects.filter(s => s.category === 'mathematics');
+  const physicsSubjects = subjects.filter(s => s.category === 'physics');
+  const csSubjects = subjects.filter(s => s.category === 'computer_science');
 
-  await prisma.payment.createMany({
-    data: paymentData,
-  });
-}
+  const tutorSubjectData: { tutorId: string; subjectId: string }[] = [];
 
-async function createReviews(bookings: any[]) {
-  const reviewData: {
-    bookingId: string;
-    studentId: string;
-    tutorId: string;
-    rating: number;
-    communication: number;
-    expertise: number;
-    preparation: number;
-    value: number;
-    comment: string;
-  }[] = [];
+  // Tutor 0 (zhang) - all math
+  mathSubjects.forEach(s => tutorSubjectData.push({ tutorId: tutorProfiles[0].id, subjectId: s.id }));
+  // Tutor 1 (li) - all physics
+  physicsSubjects.forEach(s => tutorSubjectData.push({ tutorId: tutorProfiles[1].id, subjectId: s.id }));
+  // Tutor 2 (wang) - all CS
+  csSubjects.forEach(s => tutorSubjectData.push({ tutorId: tutorProfiles[2].id, subjectId: s.id }));
+  // Tutor 3 (chen) - elementary math + basic physics
+  tutorSubjectData.push({ tutorId: tutorProfiles[3].id, subjectId: subjects[0].id });
+  tutorSubjectData.push({ tutorId: tutorProfiles[3].id, subjectId: subjects[6].id });
+  tutorSubjectData.push({ tutorId: tutorProfiles[3].id, subjectId: subjects[1].id });
 
-  const completedBookings = bookings.filter(b => b.status === BookingStatus.completed);
+  await prisma.tutorSubject.createMany({ data: tutorSubjectData });
 
-  completedBookings.forEach(booking => {
-    reviewData.push({
-      bookingId: booking.id,
-      studentId: booking.studentId,
-      tutorId: booking.tutorId,
-      rating: 5,
-      communication: 5,
-      expertise: 5,
-      preparation: 4,
-      value: 5,
-      comment: '老师讲解非常清晰，对我的帮助很大！强烈推荐。',
-    });
+  // ============================================
+  // 6. Time Slots (dayOfWeek 0-6)
+  // ============================================
+  const timeSlotData: { tutorId: string; dayOfWeek: number; startTime: string; endTime: string }[] = [];
+
+  // Tutor 0 - Mon/Wed/Fri 9-17
+  [1, 3, 5].forEach(day => {
+    timeSlotData.push({ tutorId: tutorProfiles[0].id, dayOfWeek: day, startTime: '09:00', endTime: '12:00' });
+    timeSlotData.push({ tutorId: tutorProfiles[0].id, dayOfWeek: day, startTime: '14:00', endTime: '17:00' });
   });
 
-  await prisma.review.createMany({
-    data: reviewData,
-  });
-}
-
-async function createQuestions(subjects: any[]) {
-  const questionData: {
-    subjectId: string;
-    content: string;
-    options: any;
-    correctAnswer: string;
-    explanation: string;
-    difficulty: string;
-    createdBy: string;
-  }[] = [];
-
-  const mathSubject = subjects.find(s => s.name === '代数');
-  const physicsSubject = subjects.find(s => s.name === '力学');
-  const pythonSubject = subjects.find(s => s.name === 'Python编程');
-
-  // 数学问题
-  if (mathSubject) {
-    questionData.push({
-      subjectId: mathSubject.id,
-      content: '求解方程 2x + 5 = 13，x的值是多少？',
-      options: ['A. 4', 'B. 3', 'C. 5', 'D. 6'],
-      correctAnswer: 'A',
-      explanation: '2x = 13 - 5 = 8，所以 x = 4',
-      difficulty: 'easy',
-      createdBy: 'system',
-    });
-
-    questionData.push({
-      subjectId: mathSubject.id,
-      content: '如果 f(x) = x² - 3x + 2，求 f(2) 的值？',
-      options: ['A. 0', 'B. 1', 'C. 2', 'D. -2'],
-      correctAnswer: 'A',
-      explanation: 'f(2) = 2² - 3×2 + 2 = 4 - 6 + 2 = 0',
-      difficulty: 'medium',
-      createdBy: 'system',
-    });
-  }
-
-  // 物理问题
-  if (physicsSubject) {
-    questionData.push({
-      subjectId: physicsSubject.id,
-      content: '一个物体从10米高处自由落下，落地时的速度约为多少？（g=10m/s²）',
-      options: ['A. 10 m/s', 'B. 14.14 m/s', 'C. 20 m/s', 'D. 100 m/s'],
-      correctAnswer: 'B',
-      explanation: '根据 v² = 2gh，v = √(2×10×10) = √200 ≈ 14.14 m/s',
-      difficulty: 'medium',
-      createdBy: 'system',
-    });
-  }
-
-  // Python问题
-  if (pythonSubject) {
-    questionData.push({
-      subjectId: pythonSubject.id,
-      content: 'Python中，以下哪种数据类型是不可变的？',
-      options: ['A. list', 'B. dict', 'C. tuple', 'D. set'],
-      correctAnswer: 'C',
-      explanation: 'tuple（元组）是不可变的数据类型，创建后不能修改其元素。',
-      difficulty: 'easy',
-      createdBy: 'system',
-    });
-
-    questionData.push({
-      subjectId: pythonSubject.id,
-      content: '以下代码的输出是什么？\nprint([1, 2, 3][1:])',
-      options: ['A. [1, 2]', 'B. [2, 3]', 'C. [1]', 'D. [3]'],
-      correctAnswer: 'B',
-      explanation: '列表切片 [1:] 表示从索引1开始到末尾，结果是 [2, 3]',
-      difficulty: 'easy',
-      createdBy: 'system',
-    });
-  }
-
-  return await prisma.question.createManyAndReturn({
-    data: questionData,
-  });
-}
-
-async function createQuizzes(subjects: any[], questions: any[]) {
-  const quizData: {
-    title: string;
-    subjectId: string;
-    description: string;
-    timeLimit: number;
-    totalQuestions: number;
-    passingScore: number;
-    createdBy: string;
-    isPublished: boolean;
-  }[] = [];
-
-  const mathSubject = subjects.find(s => s.category === '数学');
-  const physicsSubject = subjects.find(s => s.category === '物理');
-  const csSubject = subjects.find(s => s.category === '计算机科学');
-
-  if (mathSubject) {
-    quizData.push({
-      title: '代数基础测验',
-      subjectId: mathSubject.id,
-      description: '测试你对代数基础概念的理解',
-      timeLimit: 30,
-      totalQuestions: 2,
-      passingScore: 60,
-      createdBy: 'system',
-      isPublished: true,
-    });
-  }
-
-  if (physicsSubject) {
-    quizData.push({
-      title: '力学概念测验',
-      subjectId: physicsSubject.id,
-      description: '检验力学基础知识',
-      timeLimit: 20,
-      totalQuestions: 1,
-      passingScore: 70,
-      createdBy: 'system',
-      isPublished: true,
-    });
-  }
-
-  if (csSubject) {
-    quizData.push({
-      title: 'Python基础测验',
-      subjectId: csSubject.id,
-      description: 'Python编程入门知识测试',
-      timeLimit: 15,
-      totalQuestions: 2,
-      passingScore: 50,
-      createdBy: 'system',
-      isPublished: true,
-    });
-  }
-
-  const quizzes = await prisma.quiz.createManyAndReturn({
-    data: quizData,
+  // Tutor 1 - Tue/Thu 10-18
+  [2, 4].forEach(day => {
+    timeSlotData.push({ tutorId: tutorProfiles[1].id, dayOfWeek: day, startTime: '10:00', endTime: '13:00' });
+    timeSlotData.push({ tutorId: tutorProfiles[1].id, dayOfWeek: day, startTime: '15:00', endTime: '18:00' });
   });
 
-  // 关联问题和测验
-  const quizQuestionData: { quizId: string; questionId: string; order: number }[] = [];
+  // Tutor 2 - Mon-Sat evenings
+  [1, 2, 3, 4, 5, 6].forEach(day => {
+    timeSlotData.push({ tutorId: tutorProfiles[2].id, dayOfWeek: day, startTime: '18:00', endTime: '21:00' });
+  });
 
-  quizzes.forEach(quiz => {
-    const relatedQuestions = questions.filter(q => q.subjectId === quiz.subjectId);
-    relatedQuestions.forEach((question, index) => {
-      quizQuestionData.push({
-        quizId: quiz.id,
-        questionId: question.id,
-        order: index + 1,
-      });
-    });
+  // Tutor 3 - Mon-Fri 8-16
+  [1, 2, 3, 4, 5].forEach(day => {
+    timeSlotData.push({ tutorId: tutorProfiles[3].id, dayOfWeek: day, startTime: '08:00', endTime: '12:00' });
+    timeSlotData.push({ tutorId: tutorProfiles[3].id, dayOfWeek: day, startTime: '13:00', endTime: '16:00' });
+  });
+
+  await prisma.timeSlot.createMany({ data: timeSlotData });
+  console.log(`Time Slots: ${timeSlotData.length}`);
+
+  // ============================================
+  // 7. Bookings
+  // ============================================
+  const now = new Date();
+  const future3d = new Date(now.getTime() + 3 * 86400000);
+  const past5d = new Date(now.getTime() - 5 * 86400000);
+  const past10d = new Date(now.getTime() - 10 * 86400000);
+  const future7d = new Date(now.getTime() + 7 * 86400000);
+
+  const bookings = await Promise.all([
+    // Confirmed upcoming
+    prisma.booking.create({
+      data: {
+        studentId: students[0].id, tutorId: tutors[0].id, subjectId: subjects[3].id,
+        bookingDate: future3d, startTime: '10:00', endTime: '11:00',
+        format: 'online', status: 'pending', price: 70,
+        notes: 'Need help with integration techniques', meetUrl: 'https://meet.google.com/abc-defg-hij',
+      },
+    }),
+    // Completed past
+    prisma.booking.create({
+      data: {
+        studentId: students[0].id, tutorId: tutors[0].id, subjectId: subjects[4].id,
+        bookingDate: past5d, startTime: '14:00', endTime: '15:00',
+        format: 'online', status: 'completed', price: 70,
+        notes: 'Matrix operations review',
+      },
+    }),
+    // Pending
+    prisma.booking.create({
+      data: {
+        studentId: students[1].id, tutorId: tutors[1].id, subjectId: subjects[7].id,
+        bookingDate: future7d, startTime: '15:00', endTime: '16:30',
+        format: 'in_person', status: 'pending', price: 110,
+        notes: 'Physics exam preparation',
+      },
+    }),
+    // Completed past (for review)
+    prisma.booking.create({
+      data: {
+        studentId: students[1].id, tutorId: tutors[3].id, subjectId: subjects[1].id,
+        bookingDate: past10d, startTime: '10:00', endTime: '11:00',
+        format: 'in_person', status: 'completed', price: 45,
+      },
+    }),
+    // Cancelled
+    prisma.booking.create({
+      data: {
+        studentId: students[2].id, tutorId: tutors[2].id, subjectId: subjects[11].id,
+        bookingDate: past10d, startTime: '19:00', endTime: '20:00',
+        format: 'online', status: 'cancelled', price: 60,
+        cancellationReason: 'Schedule conflict',
+      },
+    }),
+    // Another completed
+    prisma.booking.create({
+      data: {
+        studentId: students[2].id, tutorId: tutors[0].id, subjectId: subjects[5].id,
+        bookingDate: past5d, startTime: '14:00', endTime: '15:00',
+        format: 'online', status: 'completed', price: 70,
+        notes: 'Probability distributions',
+      },
+    }),
+  ]);
+
+  console.log(`Bookings: ${bookings.length}`);
+
+  // ============================================
+  // 8. Payments
+  // ============================================
+  await Promise.all([
+    prisma.payment.create({ data: { bookingId: bookings[0].id, stripePaymentId: 'pi_test_001', amount: 70, platformFee: 7, status: 'completed' } }),
+    prisma.payment.create({ data: { bookingId: bookings[1].id, stripePaymentId: 'pi_test_002', amount: 70, platformFee: 7, status: 'completed', escrowReleasedAt: new Date(now.getTime() - 3 * 86400000) } }),
+    prisma.payment.create({ data: { bookingId: bookings[3].id, stripePaymentId: 'pi_test_003', amount: 45, platformFee: 4.5, status: 'completed', escrowReleasedAt: new Date(now.getTime() - 5 * 86400000) } }),
+    prisma.payment.create({ data: { bookingId: bookings[4].id, stripePaymentId: 'pi_test_004', amount: 60, platformFee: 6, status: 'refunded' } }),
+    prisma.payment.create({ data: { bookingId: bookings[5].id, stripePaymentId: 'pi_test_005', amount: 70, platformFee: 7, status: 'completed', escrowReleasedAt: new Date(now.getTime() - 4 * 86400000) } }),
+  ]);
+
+  // ============================================
+  // 9. Reviews
+  // ============================================
+  await Promise.all([
+    prisma.review.create({
+      data: {
+        bookingId: bookings[1].id, studentId: students[0].id, tutorId: tutors[0].id,
+        rating: 5, communication: 5, expertise: 5, preparation: 5, value: 4,
+        comment: 'Excellent tutor! Very clear explanations of matrix operations.',
+        tutorResponse: 'Thank you! You were a great student.',
+      },
+    }),
+    prisma.review.create({
+      data: {
+        bookingId: bookings[3].id, studentId: students[1].id, tutorId: tutors[3].id,
+        rating: 5, communication: 5, expertise: 4, preparation: 5, value: 5,
+        comment: 'Amazing! Made algebra so easy to understand.',
+      },
+    }),
+    prisma.review.create({
+      data: {
+        bookingId: bookings[5].id, studentId: students[2].id, tutorId: tutors[0].id,
+        rating: 4, communication: 4, expertise: 5, preparation: 4, value: 4,
+        comment: 'Very knowledgeable in statistics. Good pace and clear examples.',
+      },
+    }),
+  ]);
+
+  // ============================================
+  // 10. Questions
+  // ============================================
+  const questions = await Promise.all([
+    prisma.question.create({
+      data: { subjectId: subjects[1].id, type: 'multiple_choice', difficulty: 'easy', content: 'Solve for x: 2x + 5 = 13', options: ['x = 3', 'x = 4', 'x = 5', 'x = 6'], correctAnswer: 'x = 4', explanation: 'Subtract 5: 2x=8, divide by 2: x=4', points: 1 },
+    }),
+    prisma.question.create({
+      data: { subjectId: subjects[1].id, type: 'multiple_choice', difficulty: 'medium', content: 'Discriminant of x^2 - 5x + 6 = 0?', options: ['1', '25', '-1', '49'], correctAnswer: '1', explanation: 'D = 25 - 24 = 1', points: 2 },
+    }),
+    prisma.question.create({
+      data: { subjectId: subjects[3].id, type: 'problem', difficulty: 'medium', content: 'Find the derivative of f(x) = 3x^3 - 2x^2 + 5x - 7', correctAnswer: "f'(x) = 9x^2 - 4x + 5", explanation: 'Apply power rule.', points: 3 },
+    }),
+    prisma.question.create({
+      data: { subjectId: subjects[7].id, type: 'multiple_choice', difficulty: 'easy', content: 'SI unit of force?', options: ['Joule', 'Newton', 'Watt', 'Pascal'], correctAnswer: 'Newton', explanation: 'Newton (N) = kg*m/s^2', points: 1 },
+    }),
+    prisma.question.create({
+      data: { subjectId: subjects[7].id, type: 'problem', difficulty: 'medium', content: 'Car accelerates from rest at 3 m/s^2. Velocity after 5 seconds?', correctAnswer: '15 m/s', explanation: 'v = v0 + at = 0 + 3*5 = 15 m/s', points: 2 },
+    }),
+    prisma.question.create({
+      data: { subjectId: subjects[11].id, type: 'multiple_choice', difficulty: 'easy', content: 'Time complexity of array access by index?', options: ['O(1)', 'O(n)', 'O(log n)', 'O(n^2)'], correctAnswer: 'O(1)', explanation: 'Arrays provide O(1) random access.', points: 1 },
+    }),
+    prisma.question.create({
+      data: { subjectId: subjects[10].id, type: 'short_answer', difficulty: 'easy', content: 'Keyword to define a function in Python?', correctAnswer: 'def', explanation: 'Python uses "def" keyword.', points: 1 },
+    }),
+  ]);
+
+  console.log(`Questions: ${questions.length}`);
+
+  // ============================================
+  // 11. Quizzes
+  // ============================================
+  const quiz1 = await prisma.quiz.create({
+    data: { title: 'Algebra Fundamentals', subjectId: subjects[1].id, timeLimit: 20, createdBy: tutors[0].id, isActive: true },
+  });
+  const quiz2 = await prisma.quiz.create({
+    data: { title: 'Physics Mechanics Test', subjectId: subjects[7].id, timeLimit: 30, createdBy: tutors[1].id, isActive: true },
+  });
+  const quiz3 = await prisma.quiz.create({
+    data: { title: 'CS Basics', subjectId: subjects[11].id, timeLimit: 45, createdBy: tutors[2].id, isActive: true },
   });
 
   await prisma.quizQuestion.createMany({
-    data: quizQuestionData,
+    data: [
+      { quizId: quiz1.id, questionId: questions[0].id, order: 1 },
+      { quizId: quiz1.id, questionId: questions[1].id, order: 2 },
+      { quizId: quiz2.id, questionId: questions[3].id, order: 1 },
+      { quizId: quiz2.id, questionId: questions[4].id, order: 2 },
+      { quizId: quiz3.id, questionId: questions[5].id, order: 1 },
+      { quizId: quiz3.id, questionId: questions[6].id, order: 2 },
+    ],
   });
 
-  return quizzes;
-}
+  // ============================================
+  // 12. Quiz Attempts
+  // ============================================
+  await Promise.all([
+    prisma.quizAttempt.create({
+      data: { quizId: quiz1.id, studentId: students[0].id, score: 3, maxScore: 3, answers: { '0': 'x = 4', '1': '1' }, completedAt: new Date(now.getTime() - 2 * 86400000) },
+    }),
+    prisma.quizAttempt.create({
+      data: { quizId: quiz3.id, studentId: students[0].id, score: 1, maxScore: 2, answers: { '5': 'O(1)', '6': 'function' }, completedAt: new Date(now.getTime() - 6 * 3600000) },
+    }),
+  ]);
 
-async function createFavoriteTutors(students: any[], tutors: any[]) {
-  const favoriteData: { studentId: string; tutorId: string }[] = [];
-
-  const student1 = students.find(s => s.email === 'student1@example.com');
-  const student2 = students.find(s => s.email === 'student2@example.com');
-
-  const mathTutor = tutors.find(t => t.email === 'zhang.teacher@stemtutor.com');
-  const physicsTutor = tutors.find(t => t.email === 'li.physics@stemtutor.com');
-
-  if (student1 && mathTutor) {
-    favoriteData.push({ studentId: student1.id, tutorId: mathTutor.id });
-  }
-  if (student1 && physicsTutor) {
-    favoriteData.push({ studentId: student1.id, tutorId: physicsTutor.id });
-  }
-  if (student2 && physicsTutor) {
-    favoriteData.push({ studentId: student2.id, tutorId: physicsTutor.id });
-  }
-
+  // ============================================
+  // 13. Favorite Tutors
+  // ============================================
   await prisma.favoriteTutor.createMany({
-    data: favoriteData,
+    data: [
+      { studentId: students[0].id, tutorId: tutors[0].id },
+      { studentId: students[0].id, tutorId: tutors[1].id },
+      { studentId: students[1].id, tutorId: tutors[3].id },
+    ],
   });
-}
 
-async function createNotes(students: any[], bookings: any[]) {
-  const noteData: {
-    studentId: string;
-    bookingId?: string;
-    title: string;
-    content: string;
-    subject?: string;
-  }[] = [];
-
-  const student1 = students.find(s => s.email === 'student1@example.com');
-  const completedBooking = bookings.find(b => b.status === BookingStatus.completed);
-
-  if (student1) {
-    noteData.push({
-      studentId: student1.id,
-      title: '微积分学习笔记',
-      content: '今天学习了微积分的基本概念：极限和导数。极限是函数在某一点附近的行为，导数是函数的变化率...',
-      subject: '数学',
-    });
-
-    if (completedBooking && completedBooking.studentId === student1.id) {
-      noteData.push({
-        studentId: student1.id,
-        bookingId: completedBooking.id,
-        title: '辅导课程笔记',
-        content: '张老师讲解了导数的几何意义，曲线在某点的切线斜率就是该点的导数值...',
-        subject: '数学',
-      });
-    }
-  }
-
+  // ============================================
+  // 14. Notes
+  // ============================================
   await prisma.note.createMany({
-    data: noteData,
+    data: [
+      { studentId: students[0].id, title: 'Integration Techniques Summary', content: 'Key methods: u-substitution, integration by parts, partial fractions.', subjectId: subjects[3].id },
+      { studentId: students[0].id, title: 'Eigenvalue Quick Reference', content: 'det(A - lambdaI) = 0, solve for eigenvalues and eigenvectors.', subjectId: subjects[4].id },
+      { studentId: students[1].id, title: 'Newton Laws Cheat Sheet', content: '1st: inertia, 2nd: F=ma, 3rd: action-reaction.', subjectId: subjects[7].id },
+      { studentId: students[2].id, title: 'Python Tips', content: 'List comprehension: [x**2 for x in range(10)]', subjectId: subjects[10].id },
+    ],
   });
-}
 
-async function createHomework(tutors: any[], bookings: any[]) {
-  const homeworkData: {
-    bookingId: string;
-    title: string;
-    description: string;
-    dueDate: Date;
-    assignedBy: string;
-  }[] = [];
-
-  const completedBooking = bookings.find(b => b.status === BookingStatus.completed);
-  const mathTutor = tutors.find(t => t.email === 'zhang.teacher@stemtutor.com');
-
-  if (completedBooking && mathTutor) {
-    homeworkData.push({
-      bookingId: completedBooking.id,
-      title: '导数练习题',
-      description: '完成以下导数计算练习：1. 求 y=x² 的导数 2. 求 y=x³-2x+1 的导数 3. 求 y=sin(x) 的导数',
-      dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      assignedBy: mathTutor.id,
-    });
-  }
-
+  // ============================================
+  // 15. Homework
+  // ============================================
   await prisma.homework.createMany({
-    data: homeworkData,
-  });
-}
-
-async function createNotifications(users: any[]) {
-  const notificationData: {
-    userId: string;
-    type: string;
-    title: string;
-    content: string;
-    isRead: boolean;
-  }[] = [];
-
-  users.forEach((user, index) => {
-    notificationData.push({
-      userId: user.id,
-      type: 'system',
-      title: '欢迎使用STEM辅导平台',
-      content: '感谢您注册STEM辅导平台，开始您的学习之旅吧！',
-      isRead: index % 2 === 0,
-    });
-
-    if (user.role === UserRole.STUDENT) {
-      notificationData.push({
-        userId: user.id,
-        type: 'booking',
-        title: '预订提醒',
-        content: '您有一节即将开始的课程，请准时参加。',
-        isRead: false,
-      });
-    }
-
-    if (user.role === UserRole.TUTOR) {
-      notificationData.push({
-        userId: user.id,
-        type: 'review',
-        title: '新评价通知',
-        content: '您收到了一条新的学生评价，快去看看吧！',
-        isRead: false,
-      });
-    }
+    data: [
+      { bookingId: bookings[1].id, tutorId: tutors[0].id, title: 'Matrix Operations Practice', description: 'Complete exercises 3.1-3.10 on matrix multiplication and determinants.', dueDate: new Date(now.getTime() + 7 * 86400000) },
+      { bookingId: bookings[3].id, tutorId: tutors[3].id, title: 'Quadratic Equations Worksheet', description: 'Solve 20 quadratic equations using the quadratic formula.', dueDate: new Date(now.getTime() + 5 * 86400000) },
+    ],
   });
 
+  // ============================================
+  // 16. Notifications
+  // ============================================
   await prisma.notification.createMany({
-    data: notificationData,
+    data: [
+      { userId: students[0].id, type: 'booking_confirmed', title: 'Booking Confirmed', message: 'Your calculus session with Zhang has been confirmed.', isRead: false, data: { bookingId: bookings[0].id } },
+      { userId: students[0].id, type: 'quiz_result', title: 'Quiz Completed', message: 'You scored 100% on Algebra Fundamentals!', isRead: true, data: { quizId: quiz1.id, score: 3, maxScore: 3 } },
+      { userId: students[1].id, type: 'booking_request', title: 'Booking Pending', message: 'Your Mechanics session with Li is pending confirmation.', isRead: false, data: { bookingId: bookings[2].id } },
+      { userId: tutors[0].id, type: 'new_booking', title: 'New Session Booked', message: 'Xiaoming Wang booked a calculus session.', isRead: false, data: { bookingId: bookings[0].id } },
+      { userId: tutors[0].id, type: 'new_review', title: 'New Review', message: 'You received a 5-star review for Linear Algebra.', isRead: true, data: { rating: 5 } },
+      { userId: admin.id, type: 'system', title: 'Tutor Pending Verification', message: 'All new tutors have been verified.', isRead: false },
+    ],
   });
+
+  // ============================================
+  // 17. Audit Logs
+  // ============================================
+  await prisma.auditLog.createMany({
+    data: [
+      { userId: admin.id, action: 'USER_CREATE', resource: 'User', resourceId: tutors[0].id, details: { email: tutors[0].email, role: 'TUTOR' }, ipAddress: '127.0.0.1' },
+      { userId: admin.id, action: 'TUTOR_VERIFY', resource: 'TutorProfile', resourceId: tutorProfiles[0].id, details: { verified: true }, ipAddress: '127.0.0.1' },
+      { userId: students[0].id, action: 'BOOKING_CREATE', resource: 'Booking', resourceId: bookings[0].id, details: { tutorId: tutors[0].id, subject: 'Calculus' }, ipAddress: '127.0.0.1' },
+    ],
+  });
+
+  console.log('\n--- Seed Summary ---');
+  console.log(`Users:           ${1 + tutors.length + students.length} (1 admin, ${tutors.length} tutors, ${students.length} students)`);
+  console.log(`Tutor Profiles:  ${tutorProfiles.length}`);
+  console.log(`Student Profiles: ${students.length}`);
+  console.log(`Subjects:        ${subjects.length}`);
+  console.log(`Tutor Subjects:  ${tutorSubjectData.length}`);
+  console.log(`Time Slots:      ${timeSlotData.length}`);
+  console.log(`Bookings:        ${bookings.length}`);
+  console.log(`Questions:       ${questions.length}`);
+  console.log(`Quizzes:         3`);
+  console.log('\nSeed completed successfully!');
 }
 
 main()
   .catch((e) => {
-    console.error('种子数据插入失败:', e);
+    console.error('Seed failed:', e);
     process.exit(1);
   })
   .finally(async () => {

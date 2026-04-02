@@ -1,5 +1,6 @@
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
+import type { Express, Request, Response } from 'express';
 import { env } from '../config/env';
 
 const options: swaggerJsdoc.Options = {
@@ -120,14 +121,14 @@ const options: swaggerJsdoc.Options = {
 
 export const swaggerSpec = swaggerJsdoc(options);
 
-export function setupSwagger(app: Express.Application) {
+export function setupSwagger(app: Express) {
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
     customCss: '.swagger-ui .topbar { display: none }',
     customSiteTitle: 'STEM Tutor API Docs'
   }));
 
   // API spec as JSON
-  app.get('/api-docs.json', (_req, res) => {
+  app.get('/api-docs.json', (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'application/json');
     res.send(swaggerSpec);
   });

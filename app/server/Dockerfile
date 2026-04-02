@@ -5,10 +5,13 @@ WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
-COPY prisma ./prisma/
 
-# Install dependencies
+# Install dependencies (includes tsx for prisma.config.ts)
 RUN npm ci
+
+# Copy prisma files and config
+COPY prisma ./prisma/
+COPY prisma.config.ts ./
 
 # Generate Prisma client
 RUN npx prisma generate
@@ -22,16 +25,30 @@ RUN npm run build
 # Production image
 FROM node:20-alpine AS runner
 
+# Install curl for healthcheck
+RUN apk add --no-cache curl
+
 WORKDIR /app
 
-# Copy built files and dependencies
+# Copy package files and install all dependencies (need tsx for runtime)
+COPY package*.json ./
+RUN npm ci
+
+# Copy prisma files and config for runtime
+COPY prisma ./prisma/
+COPY prisma.config.ts ./
+
+# Generate Prisma client in production
+RUN npx prisma generate
+
+# Copy source code (needed for tsx)
+COPY src ./src
+
+# Copy built files
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/prisma ./prisma
 
 # Expose port
 EXPOSE 8080
 
-# Start server
-CMD ["node", "dist/index.js"]
+# Start server with tsx
+CMD ["npx", "tsx", "src/index.ts"]
