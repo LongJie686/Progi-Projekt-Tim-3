@@ -4,6 +4,7 @@ import { env } from './config/env';
 import { prisma } from './config/database';
 import { disconnectRedis } from './config/redis';
 import { logger } from './config/logger';
+import { socketService } from './config/socket';
 
 const PORT = env.PORT;
 
@@ -19,6 +20,10 @@ async function startServer() {
       logger.info(`Environment: ${env.NODE_ENV}`);
       logger.info(`API docs: http://localhost:${PORT}/api-docs`);
     });
+
+    // Initialize Socket.io
+    socketService.initialize(server);
+    logger.info('Socket.io initialized');
 
     // Graceful shutdown
     const shutdown = async (signal: string) => {
